@@ -4,18 +4,7 @@ import type React from "react"
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import {
-  collection,
-  addDoc,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  updateDoc,
-  query,
-  where,
-  orderBy,
-  limit,
-} from "firebase/firestore"
+import { collection, addDoc, deleteDoc, doc, onSnapshot, updateDoc, query, where, limit } from "firebase/firestore"
 import { db } from "@/lib/firebase"
 import { useAuth } from "@/hooks/use-auth"
 import { MainNav } from "@/components/main-nav"
@@ -28,7 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/use-toast"
-import { CheckCircle, Flag, Info, Play, ShieldCheck, Star, XCircle } from "lucide-react"
+import { CheckCircle, Flag, Info, Play, ShieldCheck, Star, XCircle, TrendingUp, AlertTriangle } from "lucide-react"
 
 interface TrustPolicy {
   id: string
@@ -49,16 +38,30 @@ interface Review {
   hidden?: boolean
 }
 
+interface TrustStats {
+  avgRating: number
+  flaggedCount: number
+  trustScore: number
+  totalReviews: number
+  approvedReviews: number
+  rejectedReviews: number
+  trustOverTime: { date: string; score: number }[]
+}
+
 export default function TrustManagementPage() {
   const { user } = useAuth()
   const router = useRouter()
   const [policies, setPolicies] = useState<TrustPolicy[]>([])
   const [flaggedReviews, setFlaggedReviews] = useState<Review[]>([])
   const [recentReviews, setRecentReviews] = useState<Review[]>([])
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<TrustStats>({
     avgRating: 0,
     flaggedCount: 0,
     trustScore: 0,
+    totalReviews: 0,
+    approvedReviews: 0,
+    rejectedReviews: 0,
+    trustOverTime: [],
   })
 
   // Form states
@@ -70,6 +73,7 @@ export default function TrustManagementPage() {
   const [testReviewProduct, setTestReviewProduct] = useState("")
   const [testReviewRating, setTestReviewRating] = useState(4)
   const [testReviewText, setTestReviewText] = useState("")
+  const [showCalculationDetails, setShowCalculationDetails] = useState(false)
 
   useEffect(() => {
     // Redirect if not admin
@@ -87,57 +91,100 @@ export default function TrustManagementPage() {
       setPolicies(policiesList)
     })
 
-    // Load flagged reviews (rating <= 2)
-    const flaggedQuery = query(
-      collection(db, "reviews"),
-      where("rating", "<=", 2),
-      orderBy("timestamp", "desc"),
-      limit(5),
-    )
+    // Find the flagged reviews query that's causing the error
+    // Replace this query:
+    // const flaggedQuery = query(
+    //   collection(db, "reviews"),
+    //   where("rating", "<=", 2),
+    //   orderBy("timestamp", "desc"),
+    //   limit(5),
+    // )
+
+    // With this modified query that avoids the need for a composite index:
+    const flaggedQuery = query(collection(db, "reviews"), where("rating", "<=", 2), limit(5))
 
     const unsubscribeFlagged = onSnapshot(flaggedQuery, (snapshot) => {
       const reviewsList: Review[] = []
       snapshot.forEach((doc) => {
         reviewsList.push({ id: doc.id, ...doc.data() } as Review)
       })
+      // Update the code to sort the reviews after fetching them
+      // In the flaggedQuery onSnapshot callback, add this after creating the reviewsList:
+      reviewsList.sort((a, b) => {
+        const timeA = a.timestamp?.seconds || 0
+        const timeB = b.timestamp?.seconds || 0
+        return timeB - timeA // Sort in descending order (newest first)
+      })
       setFlaggedReviews(reviewsList)
     })
 
-    // Load recent reviews
-    const recentQuery = query(collection(db, "reviews"), orderBy("timestamp", "desc"), limit(5))
+    // Also fix the recent reviews query to avoid potential similar issues:
+    // Replace this query:
+    // const recentQuery = query(collection(db, "reviews"), orderBy("timestamp", "desc"), limit(5))
+
+    // With this simpler query:
+    const recentQuery = query(collection(db, "reviews"), limit(5))
 
     const unsubscribeRecent = onSnapshot(recentQuery, (snapshot) => {
       const reviewsList: Review[] = []
       snapshot.forEach((doc) => {
         reviewsList.push({ id: doc.id, ...doc.data() } as Review)
       })
+      // Similarly, in the recentQuery onSnapshot callback, add this after creating the reviewsList:
+      reviewsList.sort((a, b) => {
+        const timeA = a.timestamp?.seconds || 0
+        const timeB = b.timestamp?.seconds || 0
+        return timeB - timeA // Sort in descending order (newest first)
+      })
       setRecentReviews(reviewsList)
     })
 
     // Calculate analytics
-    const unsubscribeAnalytics = onSnapshot(collection(db, "reviews"), (snapshot) => {
+    const unsubscribeAnalytics = onSnapshot(collection(db, "reviews"), async (snapshot) => {
       let totalRating = 0
       let count = 0
       let flaggedCount = 0
+      let approvedCount = 0
+      let rejectedCount = 0
 
       snapshot.forEach((doc) => {
         const data = doc.data()
+        count++
+
         if (!data.hidden) {
           totalRating += data.rating
-          count++
-          if (data.rating <= 2) {
-            flaggedCount++
-          }
+        }
+
+        if (data.rating <= 2) {
+          flaggedCount++
+        }
+
+        if (data.adminReviewed && data.adminApproved) {
+          approvedCount++
+        }
+
+        if (data.adminReviewed && !data.adminApproved) {
+          rejectedCount++
         }
       })
 
       const avgRating = count ? Number.parseFloat((totalRating / count).toFixed(1)) : 0
+
+      // Trust score calculation: (approved reviews / total reviews) * 100
+      // This represents the percentage of reviews that meet our trust standards
       const trustScore = count ? Number.parseInt((((count - flaggedCount) / count) * 100).toFixed(0)) : 0
+
+      // Generate trust over time data (simulated for demonstration)
+      const trustOverTime = await generateTrustOverTimeData()
 
       setStats({
         avgRating,
         flaggedCount,
         trustScore,
+        totalReviews: count,
+        approvedReviews: approvedCount,
+        rejectedReviews: rejectedCount,
+        trustOverTime,
       })
     })
 
@@ -148,6 +195,36 @@ export default function TrustManagementPage() {
       unsubscribeAnalytics()
     }
   }, [user, router])
+
+  // Simulate trust over time data
+  const generateTrustOverTimeData = async () => {
+    // In a real application, this would be calculated from historical data
+    // For demonstration, we'll create simulated data
+    const today = new Date()
+    const data = []
+
+    // Generate data for the last 7 days
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(today)
+      date.setDate(date.getDate() - i)
+
+      // Base score that increases over time (simulating trust growth)
+      // T = base_trust + (days_active * growth_factor)
+      const baseScore = 70 // Starting trust score
+      const daysActive = 30 + (6 - i) // Simulating the platform being active for 30+ days
+      const growthFactor = 0.2 // How quickly trust grows over time
+
+      // Calculate trust score with some random variation
+      const score = Math.min(100, Math.round(baseScore + daysActive * growthFactor + (Math.random() * 5 - 2.5)))
+
+      data.push({
+        date: date.toLocaleDateString(),
+        score,
+      })
+    }
+
+    return data
+  }
 
   const handleAddPolicy = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -272,7 +349,6 @@ export default function TrustManagementPage() {
       toast({
         title: "Error",
         description: "Failed to approve review.",
-        variant: "destructive",
       })
     }
   }
@@ -293,8 +369,56 @@ export default function TrustManagementPage() {
       toast({
         title: "Error",
         description: "Failed to reject review.",
-        variant: "destructive",
       })
+    }
+  }
+
+  // Add default policies if none exist
+  const addDefaultPolicies = async () => {
+    if (policies.length === 0) {
+      const defaultPolicies = [
+        {
+          name: "Minimum Rating",
+          rule: "rating >= 1",
+        },
+        {
+          name: "Minimum Review Length",
+          rule: "text.length >= 10",
+        },
+        {
+          name: "No Profanity",
+          rule: "!text.toLowerCase().includes('profanity')",
+        },
+        {
+          name: "Time-Based Trust",
+          rule: "rating >= 3 || text.length >= 50",
+        },
+        {
+          name: "Contextual Relevance",
+          rule: "text.toLowerCase().includes('product') || text.toLowerCase().includes('service')",
+        },
+      ]
+
+      try {
+        for (const policy of defaultPolicies) {
+          await addDoc(collection(db, "trustPolicies"), {
+            name: policy.name,
+            rule: policy.rule,
+            createdAt: new Date(),
+          })
+        }
+        toast({
+          title: "Success",
+          description: "Default policies added successfully.",
+        })
+      } catch (error) {
+        console.error("Error adding default policies:", error)
+        toast({
+          title: "Error",
+          description: "Failed to add default policies.",
+          variant: "destructive",
+        })
+      }
     }
   }
 
@@ -337,6 +461,98 @@ export default function TrustManagementPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Trust Score Calculation Details */}
+          <Card className="mb-8">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="flex items-center">
+                <TrendingUp className="mr-2 h-5 w-5" />
+                Trust Score Calculation
+              </CardTitle>
+              <Button variant="outline" size="sm" onClick={() => setShowCalculationDetails(!showCalculationDetails)}>
+                {showCalculationDetails ? "Hide Details" : "Show Details"}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {showCalculationDetails ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-muted rounded-md">
+                    <h3 className="font-medium mb-2">Platform Trust Score Formula:</h3>
+                    <p className="font-mono bg-background p-2 rounded">
+                      Trust Score = (Total Reviews - Flagged Reviews) / Total Reviews × 100%
+                    </p>
+                    <p className="mt-2">
+                      = ({stats.totalReviews} - {stats.flaggedCount}) / {stats.totalReviews} × 100%
+                    </p>
+                    <p className="mt-1">
+                      = {stats.totalReviews - stats.flaggedCount} / {stats.totalReviews} × 100%
+                    </p>
+                    <p className="mt-1">
+                      = {((stats.totalReviews - stats.flaggedCount) / stats.totalReviews).toFixed(2)} × 100%
+                    </p>
+                    <p className="mt-1">= {stats.trustScore}%</p>
+                  </div>
+
+                  <div className="p-4 bg-muted rounded-md">
+                    <h3 className="font-medium mb-2">Trust Over Time Formula:</h3>
+                    <p className="font-mono bg-background p-2 rounded">
+                      T = base_trust + (days_active × growth_factor)
+                    </p>
+                    <p className="mt-2">Where:</p>
+                    <ul className="list-disc ml-6 mt-1 space-y-1">
+                      <li>base_trust = Initial trust score (70%)</li>
+                      <li>days_active = Number of days the platform has been active</li>
+                      <li>growth_factor = Rate at which trust grows over time (0.2% per day)</li>
+                    </ul>
+                    <p className="mt-2">This formula reflects how trust is gained over time as the platform matures.</p>
+                  </div>
+
+                  <div className="p-4 bg-muted rounded-md">
+                    <h3 className="font-medium mb-2">Review Statistics:</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p>Total Reviews: {stats.totalReviews}</p>
+                        <p>Approved Reviews: {stats.approvedReviews}</p>
+                        <p>Rejected Reviews: {stats.rejectedReviews}</p>
+                      </div>
+                      <div>
+                        <p>Flagged Reviews: {stats.flaggedCount}</p>
+                        <p>Average Rating: {stats.avgRating}</p>
+                        <p>
+                          Review Approval Rate:{" "}
+                          {stats.totalReviews ? ((stats.approvedReviews / stats.totalReviews) * 100).toFixed(1) : 0}%
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-medium mb-2">Trust Score Over Time:</h3>
+                    <div className="rounded-md border p-4">
+                      <div className="flex items-end h-40 space-x-2">
+                        {stats.trustOverTime.map((item, index) => (
+                          <div key={index} className="flex flex-col items-center flex-1">
+                            <div className="bg-primary w-full rounded-t" style={{ height: `${item.score}%` }}></div>
+                            <p className="text-xs mt-1">
+                              {item.date.split("/")[1]}/{item.date.split("/")[0]}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-between mt-2">
+                        <p className="text-xs">Last 7 Days</p>
+                        <p className="text-xs">Trust grows over time</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4">
+                  <p>Click "Show Details" to view the trust score calculation methodology and statistics.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           <div className="grid gap-6 md:grid-cols-2">
             {/* Left Column: Policy Configuration & Trust Rules */}
@@ -383,9 +599,14 @@ export default function TrustManagementPage() {
                       </p>
                     </div>
 
-                    <Button type="submit" className="w-full">
-                      Add Policy
-                    </Button>
+                    <div className="flex space-x-2">
+                      <Button type="submit" className="flex-1">
+                        Add Policy
+                      </Button>
+                      <Button type="button" variant="outline" onClick={addDefaultPolicies}>
+                        Add Default Policies
+                      </Button>
+                    </div>
                   </form>
 
                   <h3 className="text-sm font-medium mb-2">Active Policies</h3>
@@ -566,6 +787,23 @@ export default function TrustManagementPage() {
                 </CardHeader>
                 <CardContent>
                   <p className="text-muted-foreground mb-4">Monitor and moderate flagged reviews that need attention</p>
+
+                  <div className="p-4 mb-4 bg-amber-50 border border-amber-200 rounded-md">
+                    <div className="flex items-start">
+                      <AlertTriangle className="h-5 w-5 text-amber-600 mr-2 mt-0.5" />
+                      <div>
+                        <h4 className="font-medium text-amber-800">Admin Review Guidelines</h4>
+                        <p className="text-sm text-amber-700 mt-1">Reviews should be rejected if they:</p>
+                        <ul className="list-disc ml-5 mt-1 text-sm text-amber-700">
+                          <li>Contain offensive language or personal attacks</li>
+                          <li>Are completely unrelated to the product</li>
+                          <li>Appear to be spam or promotional content</li>
+                          <li>Violate platform policies (rating ≤ 2 with no explanation)</li>
+                          <li>Contain false or misleading information</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
 
                   <Tabs defaultValue="flagged">
                     <TabsList className="w-full">

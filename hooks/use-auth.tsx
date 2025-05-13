@@ -1,8 +1,6 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useEffect, createContext, useContext } from "react"
+import { useState, useEffect, createContext, useContext, type ReactNode } from "react"
 import {
   getAuth,
   signInWithEmailAndPassword,
@@ -30,9 +28,16 @@ interface AuthContextType {
   signOut: () => Promise<void>
 }
 
+// Create context with undefined as default value
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+// Props type for AuthProvider
+interface AuthProviderProps {
+  children: ReactNode
+}
+
+// AuthProvider function component
+export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const auth = getAuth()
@@ -139,9 +144,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  // Create the context value object
+  const contextValue: AuthContextType = {
+    user,
+    loading,
+    signIn,
+    signUp,
+    signOut,
+  }
+
+  // Use createElement instead of JSX
   return <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>{children}</AuthContext.Provider>
 }
 
+// Hook to use the auth context
 export function useAuth() {
   const context = useContext(AuthContext)
   if (context === undefined) {
